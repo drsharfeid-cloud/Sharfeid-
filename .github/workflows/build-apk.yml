@@ -4,15 +4,22 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build APK
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -25,38 +32,64 @@ jobs:
 
       - name: Install Android SDK packages
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extract project
-        run: unzip -o SHARAF_EID_Cloud_Build.zip
+      - name: Extract Android project
+        run: |
+          unzip -o SHARAF_EID_Cloud_Build.zip
 
-      - name: Fix Java and Kotlin versions
+      - name: Fix Kotlin source syntax
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("SharafEidContentManager/app/build.gradle.kts")
+
+          p = Path("SharafEidContentManager/app/src/main/java/com/sharafeid/contentmanager/MainActivity.kt")
           s = p.read_text()
-          s = s.replace(
-              "buildFeatures { compose = true }",
-              """compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
-              buildFeatures { compose = true }"""
-          )
-          p.write_text(s)
+
+          old = 'val raw = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?:'
+          new = 'val raw = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: "[]"'
+
+          if old not in s:
+              raise SystemExit("Could not find the broken Kotlin line")
+
+          p.write_text(s.replace(old, new, 1))
+          print("Kotlin source syntax fixed")
           PY
 
-      - name: Build APK
+      - name: Configure Java and Kotlin targets
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("SharafEidContentManager/app/build.gradle.kts")
+          s = p.read_text()
+
+          block = '''
+          compileOptions {
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
+          }
+
+          kotlinOptions {
+              jvmTarget = "17"
+          }
+          '''
+
+          if "sourceCompatibility" not in s:
+              s = s.replace("    buildFeatures { compose = true }", block + "\n    buildFeatures { compose = true }")
+
+          p.write_text(s)
+          print("Java and Kotlin targets configured")
+          PY
+
+      - name: Build Debug APK
         working-directory: SharafEidContentManager
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: sharaf-eid-debug-apk
+          name: SHARAF-EID-APK
           path: SharafEidContentManager/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
